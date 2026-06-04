@@ -3,17 +3,8 @@ import numpy as np
 import librosa
 import joblib
 import tensorflow as tf
-from scipy.signal import butter, lfilter
 from pydub import AudioSegment
-import logging
-from flask import Flask, request, jsonify
-
-# Initialize Flask app
-app = Flask(__name__)
-
-# Enable logging
-logging.basicConfig(level=logging.DEBUG)
-app.logger.info("Flask app started")
+import gradio as gr
 
 # Load TFLite model
 interpreter = tf.lite.Interpreter(model_path="best_english_deep_model.tflite")
@@ -25,7 +16,6 @@ output_details = interpreter.get_output_details()
 scaler = joblib.load("scaler.pkl")
 label_encoder = joblib.load("label_encoder.pkl")
 
-# Helper Functions
 def convert_to_wav(in_path: str, out_path: str) -> str:
     audio = AudioSegment.from_file(in_path)
     audio = audio.set_frame_rate(16000).set_channels(1)
@@ -44,54 +34,42 @@ def extract_features(y: np.ndarray, sr: int) -> np.ndarray:
     rmse = np.mean(librosa.feature.rms(y=y).T, axis=0)
     return np.hstack([mfccs, chroma, contrast, zcr, rmse])
 
-# Prediction API
-@app.route('/predict', methods=['POST'])
-def predict():
+def predict(audio_path: str) -> str:
+    if audio_path is None:
+        return "Please upload an audio file."
     try:
-        # Check if a file is present
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
-        
-        file = request.files['file']
-        
-        # Save uploaded file
-        in_path = "input_audio"
-        out_path = "processed_audio.wav"
-        file.save(in_path)
+        wav_path = "converted.wav"
+        convert_to_wav(audio_path, wav_path)
 
-        # Convert to wav
-        convert_to_wav(in_path, out_path)
-
-        # Load audio
-        y, sr = librosa.load(out_path, sr=16000)
+        y, sr = librosa.load(wav_path, sr=16000)
         y = remove_noise(y, sr)
 
-        # Feature extraction
         features = extract_features(y, sr)
-        features = scaler.transform([features])
+        scaled_features = scaler.transform([features]).astype(np.float32)
 
-        # Run inference
-        input_data = features.astype(np.float32)       
-        interpreter.set_tensor(input_details[0]['index'], input_data)
+        interpreter.set_tensor(input_details[0]['index'], scaled_features)
         interpreter.invoke()
         output_data = interpreter.get_tensor(output_details[0]['index'])
 
-        # Decode prediction
-        predicted_class = np.argmax(output_data)
-        predicted_label = label_encoder.inverse_transform([predicted_class])[0]
+        predicted_label = label_encoder.inverse_transform([np.argmax(output_data)])[0]
 
-        # Return response
-        return jsonify({'prediction': predicted_label})
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
+
+        return f"Prediction: {predicted_label}"
 
     except Exception as e:
-        app.logger.error(f"Error during prediction: {e}")
-        return jsonify({'error': str(e)}), 500
+        return f"Error: {str(e)}"
 
-# Health Check
-@app.route('/', methods=['GET'])
-def index():
-    return "Flask API is running successfully🚀"
+demo = gr.Interface(
+    fn=predict,
+    inputs=gr.Audio(type="filepath", label="Upload English Audio File"),
+    outputs=gr.Text(label="Result"),
+    title="TrueTone — English Audio Forgery Detection",
+    description="Upload an English audio file to detect whether it is Original, AI Generated, or Combined. Built using a TFLite deep learning model trained on English audio samples.",
+    examples=[],
+    theme="soft"
+)
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    demo.launch()

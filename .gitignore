@@ -1,4 +1,8 @@
-venv/
+myvenv/
 __pycache__/
- *.pyc
- .DS_Store
+*.pyc
+.env
+*.pkl
+*.h5
+*.tflite
+temp_input/
